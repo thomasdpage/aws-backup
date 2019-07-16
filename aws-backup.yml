@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion:
+  "2010-09-09"
+Description:
+  "Creates an AWS Backup vault, plan, selection etc for the specified environment"
+Mappings: 
+  EnvMap: 
+    DEV:
+      Retention: 7
+    PRD:
+      Retention: 35
+Parameters:
+  EnvName:
+    Description: The name of the environment (used to build resources)
+    Type: String
+    Default: DEV
+    AllowedValues:
+      - DEV
+      - PRD
+    ConstraintDescription: must specify DEV, UAT or PRD
+  EMailAddr:
+    Description: Email address for notifications
+    Default: joe@example.com
+    Type: String
+
+Resources:
+
+## Create SNS topic
+  BackupsSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties: 
+      DisplayName: !Join [ "-", [ !Ref "EnvName", backups-sns-topic ] ]
+## Create topic subscription for CCoE
+  BackupSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref EMailAddr
+      Protocol: email
+      Region: !Ref "AWS::Region"
+      TopicArn: !Ref BackupsSNSTopic
+
+## Create KMS key to encrypt backups
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "Encryption key for daily"
+      EnableKeyRotation: True
+      Enabled: True
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Principal:
+            "AWS": { "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:root" }
+          Action:
+          - kms:*
+          Resource: "*"
+
+## Reference service role already created outside of this template
+  BackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+     AssumeRolePolicyDocument:
+       Version: "2012-10-17"
+       Statement:
+         -
+          Effect: "Allow"
+          Principal:
+            Service:
+              - "backup.amazonaws.com"
+          Action:
+            - "sts:AssumeRole"
+     ManagedPolicyArns:
+       -
+        "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+
+## Create backup vault for this environment          
+  BackupVaultWithDailyBackups:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      BackupVaultName: !Join [ "-", [ !Ref "EnvName", backup-vault ] ]
+      EncryptionKeyArn: !GetAtt KMSKey.Arn
+      Notifications: 
+        BackupVaultEvents:
+          - BACKUP_JOB_STARTED
+          - BACKUP_JOB_COMPLETED
+        SNSTopicArn: !Ref BackupsSNSTopic
+
+## Create daily backup plan and lifecycle policy
+  DailyBackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Join [ "-", [ !Ref "EnvName", daily-backups ] ]
+        BackupPlanRule:
+          -
+            RuleName: !Join [ "-", [ !Ref "EnvName", daily-backup-rule ] ]
+            TargetBackupVault: !Ref BackupVaultWithDailyBackups
+            ScheduleExpression: "cron(0 5 ? * * *)"
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 120
+            Lifecycle:
+              - DeleteAfterDays: !FindInMap [EnvMap, !Ref EnvName, Retention]
+                          
+## Create tag based backup selection
+  TagBasedBackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupSelection:
+        SelectionName: "TagBasedBackupSelection"
+        IamRoleArn: !GetAtt BackupRole.Arn
+        ListOfTags:
+         -
+           ConditionType: "STRINGEQUALS"
+           ConditionKey: "backup-plan"
+           ConditionValue: "daily"
+         -
+           ConditionType: "STRINGEQUALS"
+           ConditionKey: "environment"
+           ConditionValue: !Ref EnvName
+      BackupPlanId: !Ref DailyBackupPlan
+         
+        
