@@ -29,6 +29,26 @@ Resources:
     Type: AWS::SNS::Topic
     Properties: 
       DisplayName: !Join [ "-", [ !Ref "EnvName", backups-sns-topic ] ]
+
+## Create topic policy
+  BackupTopicPolicy:
+    Type: "AWS::SNS::TopicPolicy"
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+           Sid: TopicPolicy
+           Effect: "Allow"
+           Principal:
+             Service:
+             - "backup.amazonaws.com"
+           Action: "sns:Publish"
+           Resource: "*"
+      Topics:
+        -
+         Ref: BackupsSNSTopic
+
 ## Create topic subscription for CCoE
   BackupSNSSubscription:
     Type: AWS::SNS::Subscription
@@ -99,7 +119,7 @@ Resources:
             StartWindowMinutes: 60
             CompletionWindowMinutes: 120
             Lifecycle:
-              - DeleteAfterDays: !FindInMap [EnvMap, !Ref EnvName, Retention]
+              DeleteAfterDays: !FindInMap [EnvMap, !Ref EnvName, Retention]
                           
 ## Create tag based backup selection
   TagBasedBackupSelection:
